@@ -1,0 +1,723 @@
+diff -Naurp phaistos-1.0/bin/phaistos_option_definitions.h phaistos_Go/bin/phaistos_option_definitions.h
+--- phaistos-1.0/bin/phaistos_option_definitions.h	2013-04-30 08:33:54.000000000 +0200
++++ phaistos_Go/bin/phaistos_option_definitions.h	2018-09-01 14:59:03.749535151 +0200
+@@ -53,18 +53,22 @@ namespace po = boost::program_options;
+ #include "energy/term_backbone_dbn.h"
+ #include "energy/term_helix_content.h"
+ #include "energy/term_q_factor.h"
++#include "energy/term_go_model.h"
+ #include "energy/term_angle_histogram.h"
+ #include "energy/term_angle.h"
++#include "energy/term_engh_huber_angle_bend.h"
+ #include "energy/term_energy_sum.h"
+ #include "energy/term_energy_term_wrapper.h"
+ 
+ #include "energy/observable.h"
+ #include "energy/observable_collection.h"
+ #include "energy/observable_pdb.h"
++#include "energy/observable_internals.h"
+ 
+ #include "monte_carlo/monte_carlo_metropolis_hastings.h"
+ #include "monte_carlo/monte_carlo_simulated_annealing.h"
+ #include "monte_carlo/monte_carlo_greedy_optimization.h"
++#include "monte_carlo/monte_carlo_replica_exchange.h"
+ 
+ #include "protein/pdb_input.h"
+ #include "utils/program_option_parser.h"
+@@ -421,7 +425,7 @@ struct DefineProcedureCommonOptions {
+ 
+           using namespace boost::fusion;
+ 
+-          // Add options common to all moves
++          // Add options common to all procedure objects
+           for_each(
+                make_vector(
+                     make_vector(std::string("debug"),
+@@ -736,7 +740,11 @@ struct ProcedureOptions {
+                               make_vector(std::string("energy2-evaluation-interval"),
+                                           std::string("How often to evaluate energy2 (0:never)"),
+                                           (int*)NULL,
+-                                          0)
++                                          0),
++                              make_vector(std::string("initial-chain-output-filename"),
++                                          std::string("Output filename of initial chain"),
++                                          (std::string *)NULL,
++                                          std::string("initial_%p_%t.pdb"))
+                               )
+                          ), super_group);
+           }
+@@ -852,7 +860,35 @@ struct MonteCarloOptions {
+                         make_vector()), super_group);
+           }
+           mc_mode_description.push_back("greedy-optimization");
++
++          // Replica Exchange or Parallel Tempering options
++          if (occurrences["monte-carlo-replica-exchange"]) {
++
++               // Create settings object
++               typedef typename MonteCarloReplicaExchange<CHAIN_TYPE>::Settings Settings;
++               boost::shared_ptr<Settings> settings(new Settings());
++               // Add options
++               target.add(
++                         target.create_options(
++                              DefineMonteCarloCommonOptions(),
++                              "Replica Exchange options",
++                              "monte-carlo-replica-exchange", settings,
++                              make_vector(
++                                make_vector(std::string("replica-exchange-probability"),
++                                  std::string("Probability of exchaining temperature of two chains"),
++                                  &settings->replica_exchange_probability),
++                                make_vector(std::string("betas"),
++                                  std::string("Array of beta values corresponding to each thread"),
++                                  static_cast<ProgramOptionParser::PlainVector<double> *>(&settings->betas)),
++                                make_vector(std::string("potential-type"),
++                                    std::string("If the potential is beta-depdendent (uses extra_weight == beta-dependent) or not (default: beta-independent) "),
++                                    &settings->potential_type)
++                                )), super_group);
++          }
++          mc_mode_description.push_back("replica-exchange");
++
+      }
++
+ };
+ 
+ 
+@@ -1402,12 +1438,14 @@ struct EnergyOptions {
+                               make_vector(std::string("ca-only"),
+                                           std::string("Whether to only include C-alphas in the RMSD calculation."),
+                                           &settings->ca_only),
+-                              make_vector(std::string("residue-start"),
+-                                          std::string("Start residue."),
+-                                          &settings->residue_start),
+-                              make_vector(std::string("residue-end"),
+-                                          std::string("End residue."),
+-                                          &settings->residue_end)
++                              make_vector(std::string("start-end-pairs"),
++                                          std::string("Specify which regions to use for the RMSD calculation, e.g. '1,6/9,20/0,-1'. If empty, the RMSD of the whole chain will be calculated, equivalent to '0,-1'. The energy returned will be the average of all the regions."),
++                                          &settings->start_end_pairs),
++                              ((prefix=="observable") ?
++                              make_vector(std::string("dump-average"),
++                                          std::string("Whether to dump the RMSD value for each of the specified regions (false) or the average RMSD (true)."),
++                                          &dynamic_cast<typename Observable<EnergyTerm>::Settings*>(&*settings)->dump_average) :
++                                          make_vector(std::string(""), std::string(""), (bool*)NULL))
+                               )), super_group, counter==1);
+           }
+ 
+@@ -1541,6 +1579,49 @@ struct EnergyOptions {
+                     super_group, counter==1);
+           }          
+ 
++          // go-model (energy)
++          for (int counter = occurrences[prefix+"-go-model"]; counter > 0; counter--) {
++
++               // Create settings object
++               typedef TermGoModel<CHAIN_TYPE> EnergyTerm;
++               typedef typename EnergyTerm::Settings Settings;
++               boost::shared_ptr<Settings> settings(
++                    SETTINGS_MODIFIER().template modify<EnergyTerm>(new Settings(), prefix));
++
++               // Add options
++               target.add(
++                    target.create_options(
++                         DefineEnergyCommonOptions(),
++                         "go-model: energy of native contacts constraints (" + prefix + ")",
++                         prefix+"-go-model", settings,
++                         make_vector(
++                              make_vector(std::string("contact-map-file"),
++                                          std::string("path to contact map file"),
++                                          &settings->contact_map_filename),
++                              make_vector(std::string("contact-map-string"),
++                                          std::string("String containing contacts"),
++                                          &settings->contact_map_string),
++                              make_vector(std::string("pdb-file"),
++                                          std::string("path to pdb file for constructing contact map"),
++                                          &settings->pdb_filename),
++                              make_vector(std::string("cutoff"),
++                                          std::string("contact cutoff distance when constructing map from pdb"),
++                                          &settings->cutoff),
++                              make_vector(std::string("minimum-residue-distance"),
++                                          std::string("Minimum separation between two residues before they are considered."),
++                                          &settings->minimum_residue_distance),
++                              make_vector(std::string("iteration-type"),
++                                          std::string("Which atoms to include when constructing contactmap from chain"),
++                                          &settings->iteration_type),
++                              make_vector(std::string("use-weights"),
++                                          std::string("Whether to use contact weights to calculate a weighted version of the q factor"),
++                                          &settings->use_weights)
++                              )),
++                    super_group, counter==1);
++          }          
++
++
++
+           // helix content
+           for (int counter = occurrences[prefix+"-helix-content"]; counter > 0; counter--) {
+ 
+@@ -1638,6 +1719,7 @@ struct EnergyOptions {
+                     super_group, counter==1);
+           } 
+ 
++           
+           // PDB output
+           for (int counter = occurrences[prefix+"-pdb"]; counter > 0; counter--) {
+ 
+@@ -1672,6 +1754,30 @@ struct EnergyOptions {
+                     super_group, counter==1);
+           } 
+ 
++          // internals observable 
++          for (int counter = occurrences[prefix+"-internals"]; counter > 0; counter--) {
++
++               // Create settings object (note that this is an observable)
++               typedef Observable<TermInternals<CHAIN_TYPE> > EnergyTerm;
++               typedef typename EnergyTerm::Settings Settings;
++               boost::shared_ptr<Settings> settings(
++                    SETTINGS_MODIFIER().template modify<EnergyTerm>(new Settings(), prefix));
++
++               // Since we are adding a term that can only be applied as observable, make sure 
++               // that we do not add it to anything but the observable collection
++               if (prefix!="observable")
++                    continue;
++               // Add options
++               target.add(
++                   target.create_options(
++                     DefineEnergyCommonOptions(),
++                     "internals: internal members are outputted (" + prefix + ")",
++                     prefix+"-internals", settings,
++                     make_vector(
++                       )),
++                   super_group, counter==1);
++          } 
++
+ 
+ //! Module energy option definitions are inserted here
+ #if MODULE_SUPPORT
+@@ -1732,9 +1838,35 @@ struct EnergyOptions {
+                                           &settings->window_size),
+                               make_vector(std::string("eliminate-move-bias"),
+                                           std::string("Divide out the move-bias of the corresponding moves. Equivalent to (but faster than) setting implicit-energy to false."),
+-                                          &settings->eliminate_move_bias)
++                                          &settings->eliminate_move_bias),
++                              ((prefix=="observable") ?
++                               make_vector(std::string("dump-state"),
++                                           std::string("Whether to dump the full state of the DBN."),
++                                           &dynamic_cast<typename Observable<EnergyTerm>::Settings*>(&*settings)->dump_state) :
++                               make_vector(std::string(""), std::string(""), (bool*)NULL))
+                               )), super_group, counter==1);
+           }
++
++          // Engh Huber angle bend term
++          for (int counter = occurrences[prefix+"-engh-huber-angle-bend"]; counter > 0; counter--) {
++
++               // Create settings object
++               typedef TermEnghHuberAngleBend EnergyTerm;
++               typedef typename EnergyTerm::Settings Settings;
++               boost::shared_ptr<Settings> settings(
++                    SETTINGS_MODIFIER().template modify<EnergyTerm>(new Settings(), prefix));
++
++               // Add options
++               target.add(
++                    target.create_options(
++                         DefineEnergyCommonOptions(),
++                         "engh-huber-angle-bend: angle bend term according to Engh Huber statistics (" + prefix + ")",
++                         prefix+"-engh-huber-angle-bend", settings,
++                         make_vector(
++                              )),
++                    super_group, counter==1);
++          }          
++
+      }
+ 
+      // Constructor - ChainCA specific case
+@@ -2506,6 +2638,29 @@ void initialize_monte_carlo(Options &opt
+                } else {
+                     *monte_carlo = monte_carlo_tmp;
+                }
++          } else if ((option = options["monte-carlo-replica-exchange"]).occurrences()) {
++            // Parse the options and set the ReplicaExchange settings object
++            typedef typename MonteCarloReplicaExchange<CHAIN_TYPE>::Settings Settings;
++
++            // Setup the ReplicaExchange class
++            MonteCarloReplicaExchange<CHAIN_TYPE> *monte_carlo_tmp =
++              new MonteCarloReplicaExchange<CHAIN_TYPE>(move_collection->chain,
++                  energy,
++                  move_collection,
++                  options.get_settings<Settings>(option));
++
++            if (options["threads"].as<int>() > 1) {
++              // check if there is one beta per thread in options
++              //assert(options["threads"].as<unsigned int>() == options["betas"].as<std::vector<double> >().size());
++              *monte_carlo =
++                new MonteCarloMultiThread<MonteCarloReplicaExchange<CHAIN_TYPE> >(monte_carlo_tmp,
++                    options["threads"].as<int>(),
++                    options["steps-per-move"].as<int>(),
++                    *random_number_engines);
++            } else {
++              assert(false);
++            }
++                           
+ 
+ //! Module monte carlo definition code is inserted here
+ #if MODULE_SUPPORT
+@@ -2750,6 +2905,19 @@ struct InitializeEnergy {
+                                            std::string prefix="") {
+ 
+           Options::OptionValue option;
++
++          // Engh Huber angle bend term
++          option = options[prefix+"-engh-huber-angle-bend"];
++          for (int i=0; i<option.occurrences(); ++i) {
++
++               // Settings typedef
++               typedef typename TermEnghHuberAngleBend::Settings Settings;
++
++               // Add energy term
++               energy->add_term(new TermEnghHuberAngleBend(chain,
++                                                           options.get_settings<Settings>(option,i)));
++          }
++
+      }
+ 
+ 
+@@ -2841,6 +3009,11 @@ struct InitializeEnergy {
+           }
+ 
+ 
++//! Module priority energy definition code is inserted here (for energies which return 0.0 or infinite)
++#if MODULE_SUPPORT
++#include "modules/phaistos_cpp/energy_priority.cpp"
++#endif
++
+ //! Module energy definition code is inserted here
+ #if MODULE_SUPPORT
+ #include "modules/phaistos_cpp/energy.cpp"
+@@ -2920,6 +3093,20 @@ struct InitializeEnergy {
+                                                             options.get_settings<Settings>(option,i)));
+           }
+ 
++
++          // go model
++          option = options[prefix+"-go-model"];
++          for (int i=0; i<option.occurrences(); ++i) {
++
++               // Settings typedef
++               typedef typename TermGoModel<CHAIN_TYPE>::Settings Settings;
++
++               // Add energy term
++               energy->add_term(new TermGoModel<CHAIN_TYPE>(chain,
++                                                            options.get_settings<Settings>(option,i)));
++          }
++
++
+           // angle histogram
+           option = options[prefix+"-angle-histogram"];
+           for (int i=0; i<option.occurrences(); ++i) {
+@@ -2955,6 +3142,17 @@ struct InitializeEnergy {
+                energy->add_term(new Observable<TermPdb<CHAIN_TYPE> >(chain,
+                                                                      options.get_settings<Settings>(option,i)));
+           }
++          // internals observable
++          option = options[prefix+"-internals"];
++          for (int i=0; i<option.occurrences(); ++i) {
++
++               // Settings typedef (note that this is an observable)
++               typedef typename Observable<TermInternals<CHAIN_TYPE> >::Settings Settings;
++
++               // Add energy term (note that this is an observable)
++               energy->add_term(new Observable<TermInternals<CHAIN_TYPE> >(chain,
++                                                                     options.get_settings<Settings>(option,i)));
++          }
+ 
+           // Call template specific initialization code
+           template_specific_initialization(options, chain, dbn, energy, random_number_engines,  prefix);          
+diff -Naurp phaistos-1.0/src/energy/term_contact_map.h phaistos_Go/src/energy/term_contact_map.h
+--- phaistos-1.0/src/energy/term_contact_map.h	2013-04-30 08:33:53.000000000 +0200
++++ phaistos_Go/src/energy/term_contact_map.h	2018-09-01 14:59:17.905679730 +0200
+@@ -68,9 +68,31 @@ public:
+           //! Distance between atom1 and atom2
+           double distance;
+ 
+-          //! Weight of this contact
++          //! Weight of this contact, the first group (weight, energy_width) input parameter for go model
+           double weight;
+ 
++          //! potential  width of this contact, the first group (weight, energy_width) input parameter for go model
++          double energy_width;
++
++          //! Distance between atom1 and atom2
++          double distance_go_v1;
++
++          //! Weight of this contact, the second group (weight, energy_width) input parameter for go model
++          double weight_go_v1;
++
++          //! potential  width of this contact, the second group (weight, energy_width) input parameter for go model
++          double energy_width_go_v1;
++
++          //! Distance between atom1 and atom2
++          double distance_go_v2;
++
++          //! Weight of this contact, the third group (weight, energy_width) input parameter for go model
++          double weight_go_v2;
++
++          //! potential  width of this contact, the third group (weight, energy_width) input parameter for go model
++          double energy_width_go_v2;
++
++
+           //! Default constructor
+           Contact(){}
+      
+@@ -83,13 +105,29 @@ public:
+           //! \param weight weight for this contact
+           Contact(int residue_index1, definitions::AtomEnum atom_type1, 
+                   int residue_index2, definitions::AtomEnum atom_type2, 
+-                  double distance, double weight=1.0)
++                  double distance, 
++		  double weight = 1.0, 
++		  double energy_width = 1.0,
++		  double distance_go_v1= 0.0, 
++		  double weight_go_v1 = 0.0, 
++		  double energy_width_go_v1 = 1.0, 
++		  double distance_go_v2 = 0.0, 
++		  double weight_go_v2 = 0.0, 
++		  double energy_width_go_v2 = 1.0)
+                : residue_index1(residue_index1),
+                  atom_type1(atom_type1),
+                  residue_index2(residue_index2),
+                  atom_type2(atom_type2),
+                  distance(distance),
+-                 weight(weight) {
++	    weight(weight), 
++	    energy_width(energy_width),
++	    distance_go_v1(distance_go_v1),
++	    weight_go_v1(weight_go_v1), 
++	    energy_width_go_v1(energy_width_go_v1),
++	    distance_go_v2(distance_go_v2),	   
++	    weight_go_v2(weight_go_v2), 
++	    energy_width_go_v2(energy_width_go_v2)
++	      {
+           }
+ 
+           //! Output as string - verbose version
+@@ -100,7 +138,14 @@ public:
+                           boost::lexical_cast<std::string>(residue_index2) + " " + 
+                           boost::lexical_cast<std::string>(atom_type2) + " " + 
+                           boost::lexical_cast<std::string>(distance) + " " + 
+-                          boost::lexical_cast<std::string>(weight));
++                          boost::lexical_cast<std::string>(weight) + " " + 
++                          boost::lexical_cast<std::string>(energy_width) + " " + 
++			  boost::lexical_cast<std::string>(distance_go_v1) + " " + 
++                          boost::lexical_cast<std::string>(weight_go_v1) + " " + 
++                          boost::lexical_cast<std::string>(energy_width_go_v1) + " " +
++			  boost::lexical_cast<std::string>(distance_go_v2) + " " + 
++                          boost::lexical_cast<std::string>(weight_go_v2) + " " + 
++                          boost::lexical_cast<std::string>(energy_width_go_v2));
+                return output;
+           }
+ 
+@@ -112,7 +157,14 @@ public:
+                  << c.residue_index2 << ","
+                  << c.atom_type2 << ","
+                  << c.distance << ","
+-                 << c.weight << ")";
++                 << c.weight << ","
++                 << c.energy_width << ","
++		 << c.distance_go_v1 << ","
++                 << c.weight_go_v1 << ","
++                 << c.energy_width_go_v1 << ","
++		 << c.distance_go_v2 << ","
++                 << c.weight_go_v2 << ","
++                 << c.energy_width_go_v2 << ")";
+                return o;
+           }
+ 
+@@ -131,7 +183,27 @@ public:
+                if (input.peek() != ')') {
+                     input.ignore(1);
+                     input >> c.weight;
++                    input.ignore(1);
++                    input >> c.energy_width;
++               }
++               if (input.peek() != ')') {
++                    input.ignore(1);
++                    input >> c.distance_go_v1;
++                    input.ignore(1);
++                    input >> c.weight_go_v1;
++                    input.ignore(1);
++                    input >> c.energy_width_go_v1;
++               }
++               if (input.peek() != ')') {
++		 input.ignore(1);
++		 input >> c.distance_go_v2;		 
++		 input.ignore(1);
++		 input >> c.weight_go_v2;
++		 input.ignore(1);
++		 input >> c.energy_width_go_v2;
+                }
++
++
+                input.ignore(1);
+                return input;
+           }
+@@ -285,15 +357,46 @@ public:
+                     definitions::AtomEnum atom_type2 = boost::lexical_cast<definitions::AtomEnum>(split_line[3]);
+                     double distance = boost::lexical_cast<double>(split_line[4]);;
+                     double weight = 1.0;
+-                    if (split_line.size() == 6) {
+-                         weight = boost::lexical_cast<double>(split_line[5]);;
+-                    } 
++		    double energy_width = 1.0;
++		    double distance_go_v1 = 0.0;
++                    double weight_go_v1 = 0.0;
++		    double energy_width_go_v1 = 1.0;
++		    double distance_go_v2 = 0.0;
++                    double weight_go_v2 = 0.0;
++		    double energy_width_go_v2 = 1.0;
++
++                    if (split_line.size() == 7) {
++		      weight = boost::lexical_cast<double>(split_line[5]);;
++		      energy_width = boost::lexical_cast<double>(split_line[6]);;
++                    } else if (split_line.size() == 10){
++		      weight = boost::lexical_cast<double>(split_line[5]);;
++		      energy_width = boost::lexical_cast<double>(split_line[6]);;
++		      distance_go_v1 = boost::lexical_cast<double>(split_line[7]);;
++		      weight_go_v1 = boost::lexical_cast<double>(split_line[8]);;
++		      energy_width_go_v1 = boost::lexical_cast<double>(split_line[9]);;
++		    } else if (split_line.size() == 13){
++		      weight = boost::lexical_cast<double>(split_line[5]);;
++		      energy_width = boost::lexical_cast<double>(split_line[6]);;
++		      distance_go_v1 = boost::lexical_cast<double>(split_line[7]);;
++		      weight_go_v1 = boost::lexical_cast<double>(split_line[8]);;
++		      energy_width_go_v1 = boost::lexical_cast<double>(split_line[9]);;
++		      distance_go_v2 = boost::lexical_cast<double>(split_line[10]);;
++		      weight_go_v2 = boost::lexical_cast<double>(split_line[11]);;
++		      energy_width_go_v2 = boost::lexical_cast<double>(split_line[12]);;
++		    }
+                     Contact contact(residue_index1,
+                                     atom_type1,
+                                     residue_index2,
+                                     atom_type2,
+                                     distance,
+-                                    weight);
++                                    weight,
++				    energy_width,
++				    distance_go_v1,
++                                    weight_go_v1,
++				    energy_width_go_v1,
++				    distance_go_v2,
++                                    weight_go_v2,
++                                    energy_width_go_v2);
+                     contact_map.push_back(contact);
+                }
+           }          
+@@ -463,8 +566,8 @@ public:
+      double contact_map_energy(const Contact &contact, 
+                                double r, bool dist_squared = false){
+           //std::cout << r << " " << distance << " " << width << " " << dist_squared << "\n";
+-          return dist_squared ? pow((r-contact.distance)/settings.potential_width, 2)*contact.weight : 
+-               -std::exp(-pow((r-contact.distance)/settings.potential_width, 2)*contact.weight);
++          return dist_squared ? std::pow((r-contact.distance)/settings.potential_width, 2)*contact.weight : 
++               -std::exp(-std::pow((r-contact.distance)/settings.potential_width, 2)*contact.weight);
+      }
+ 
+      //! Evaluate energy term.
+diff -Naurp phaistos-1.0/src/energy/term_go_model.h phaistos_Go/src/energy/term_go_model.h
+--- phaistos-1.0/src/energy/term_go_model.h	1970-01-01 01:00:00.000000000 +0100
++++ phaistos_Go/src/energy/term_go_model.h	2018-09-01 14:58:10.036707453 +0200
+@@ -0,0 +1,197 @@
++// go_model.h Pengfei Tian
++//            
++// Copyright (C) 2008-2011 Wouter Boomsma
++//
++// This file is part of Phaistos 
++//
++// Phaistos is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++
++// Phaistos is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License for more details.
++
++// You should have received a copy of the GNU General Public License
++// along with Phaistos.  If not, see <http://www.gnu.org/licenses/>.
++
++#ifndef GO_MODEL_H
++#define GO_MODEL_H
++
++#include "../energy/energy_term.h"
++#include "observable.h"
++#include "term_contact_map.h"
++#include <math.h> 
++
++
++namespace phaistos {
++
++//! Measure the nativeness of a chain
++template <typename CHAIN_TYPE>
++class TermGoModel: public TermContactMapBase<TermGoModel<CHAIN_TYPE>, CHAIN_TYPE> {
++protected:
++
++     //! For convenience, define local TermContactMap
++     typedef phaistos::TermContactMapBase<TermGoModel<CHAIN_TYPE>,CHAIN_TYPE> TermContactMapBase;
++
++     //! For convenience, define local Contact type
++     typedef typename TermContactMapBase::Contact Contact;
++
++public:
++
++     //! Local settings class.
++     const class Settings: public TermContactMapBase::Settings {
++     public:
++          
++          // Whether to use contact weights to calculate a weighted version of
++          // the go model function
++          bool use_weights;
++
++          //! Constructor
++          Settings(bool use_weights = true)
++               : use_weights(use_weights) {}
++          
++          //! Output operator
++          friend std::ostream &operator<<(std::ostream &o, const Settings &settings) {
++               o << "use-weights: " << settings.use_weights << "\n";               
++               o << (typename TermContactMapBase::Settings &)settings;
++               return o;
++          }
++
++     } settings;  //!< Local settings object 
++
++     //! Constructor.
++     //! \param chain Molecule chain
++     //! \param settings Local Settings object
++     //! \param random_number_engine Object from which random number generators can be created.
++     TermGoModel(CHAIN_TYPE *chain, const Settings &settings=Settings(),
++                 RandomNumberEngine *random_number_engine = &random_global)
++          : TermContactMapBase(chain, "go-model", settings, random_number_engine) {
++     }
++
++
++     //! Copy constructor.
++     //! \param other Source object from which copy is made
++     //! \param random_number_engine Object from which random number generators can be created.
++     //! \param thread_index Index indicating in which thread|rank the copy exists
++     //! \param chain Molecule chain
++     TermGoModel(const TermGoModel &other, 
++                 RandomNumberEngine *random_number_engine,
++                 int thread_index, CHAIN_TYPE *chain)
++          : TermContactMapBase(other, random_number_engine, thread_index, chain) {}
++
++
++     //! Evaluate energy term.
++     //! \param move_info Object containing information about the last executed move
++     double evaluate(MoveInfo *move_info=NULL) {
++
++          double go = 0;
++
++          //double weight_sum = 0.0;
++
++          for (unsigned int i=0; i<this->contact_map.size(); ++i) {
++               
++               Contact &contact = this->contact_map[i];
++
++               double &reference_distance_v1 = contact.distance;
++	       double &reference_distance_v2 = contact.distance_go_v1;
++	       double &reference_distance_v3 = contact.distance_go_v2;
++	       
++	       //notice the -1 index, bscause residue start from 0 
++               Atom *atom1 = (*this->chain)(contact.residue_index1-1, contact.atom_type1);
++               Atom *atom2 = (*this->chain)(contact.residue_index2-1, contact.atom_type2);
++               
++               double distance = (atom2->position - atom1->position).norm();
++	      
++               double weight_v1 = 1.0;
++               double weight_v2 = 1.0;
++               double weight_v3 = 1.0;
++               if (settings.use_weights){
++		 //weight default value = 0 
++		 weight_v1 = contact.weight;
++		 weight_v2 = contact.weight_go_v1;
++		 weight_v3 = contact.weight_go_v2;
++	       }
++               
++	       //energy_width default value = 0 
++	       double energy_width_v1 = contact.energy_width;
++               double energy_width_v2 = contact.energy_width_go_v1;
++               double energy_width_v3 = contact.energy_width_go_v2;
++		double e = 0.0;
++
++		// single well potential for protein folding, use LJ or Morse function
++		if ( weight_v1 > 0.0 && weight_v2 == 0.0 ) {	       
++			if ( int(energy_width_v1) == 126 ) {
++				// LJ 12-6
++	         		e = ( std::pow( (reference_distance_v1 / distance), 12 ) - 2.0 * std::pow( (reference_distance_v1 / distance), 6 ) ) * weight_v1;;
++                 		go += e ;
++			} else if ( int(energy_width_v1) == 1210 ) {
++                        	// LJ 12-10
++                        	e = ( 5.0 * std::pow( (reference_distance_v1 / distance), 12 ) - 6.0 * std::pow( (reference_distance_v1 / distance), 10 ) ) * weight_v1;;
++                 		go += e ;
++			} else if ( int(energy_width_v1) == 12106 ) {
++                                // LJ 12-10-6 
++                                e = ( 13.0 * std::pow( (reference_distance_v1 / distance), 12 ) - 18.0 * std::pow( (reference_distance_v1 / distance), 10 ) + 4.0 * std::pow( (reference_distance_v1 / distance), 6) ) * weight_v1;;
++                                go += e ;
++			} else if ( int(energy_width_v1) == 121 ) {
++				// Use Morse potential as the single well Go model
++				// sigma=0.707 similar to LJ12-6
++	       			e = ( std::pow( (1 - std::exp ((reference_distance_v1 - distance) * 0.707 ) ), 2 ) - 1.0 ) * weight_v1;;
++                 		go += e ;
++                        } else if ( int(energy_width_v1) == 122 ) {
++                                // Use Morse potential as the single well Go model
++                                // sigma=1.0 similar to LJ12-10
++                                e = ( std::pow( (1 - std::exp ((reference_distance_v1 - distance) * 1.0 ) ), 2 ) - 1.0 ) * weight_v1;;
++                                go += e ;
++                        } else if ( int(energy_width_v1) == 123 ) {
++                                // Use flat bottom Go model
++				if ( distance > reference_distance_v1 ) {
++                        	e = ( 5.0 * std::pow( (reference_distance_v1 / distance), 12 ) - 6.0 * std::pow( (reference_distance_v1 / distance), 10 ) ) * weight_v1;;
++				} else {
++				e = -1.0 * weight_v1;
++				}
++                                go += e ;
++			} else if ( energy_width_v1 < 100.0 ) {
++				// Gaussian potential
++	       			e = 1 - weight_v1 * std::exp( -std::pow( (distance - reference_distance_v1)/energy_width_v1, 2 ) *0.5 )  ;;	       
++	         		go += e - 1.0;
++			}
++		}
++	       	        
++		// gauassin functionfor double-basin and multiple-basin
++	       if(weight_v2 > 0 && weight_v3 == 0){
++	         e =  1 - weight_v1 * std::exp( -std::pow( (distance - reference_distance_v1)/energy_width_v1, 2)*0.5 )  ;;	       
++		 e *= 1 - weight_v2 * std::exp( -std::pow( (distance - reference_distance_v2)/energy_width_v2, 2)*0.5 )  ;; 
++	         go += e - 1.0;
++	       }
++	       if(weight_v3 > 0 ){
++                 e =  1 - weight_v1 * std::exp( -std::pow( (distance - reference_distance_v1)/energy_width_v1, 2)*0.5 )  ;;
++                 e *= 1 - weight_v2 * std::exp( -std::pow( (distance - reference_distance_v2)/energy_width_v2, 2)*0.5 )  ;;
++		 e *= 1 - weight_v3 * std::exp( -std::pow( (distance - reference_distance_v3)/energy_width_v3, 2)*0.5 )  ;; 
++                 go += e - 1.0;
++	       }
++	       //go +=  -std::exp(-std::pow((distance - reference_distance)/contact.energy_width, 2)*weight);
++	       //go += std::pow((distance - reference_distance)/contact.energy_width, 2)*weight ;
++	       //go +=  energy_width_v1 + energy_width_v2 + energy_width_v3 ;
++	       //go += weight ;
++	       //go +=  distance;
++               //q += weight/(1+std::exp(10*(distance - reference_distance - 1)));
++	       //q = reference_distance;
++          }
++
++          //q /= weight_sum;
++	 
++          
++          return go;
++     }
++
++};
++
++
++}
++
++#endif
++
++
