@@ -11,7 +11,9 @@ http://cbbp.thep.lu.se/activities/profasi/
 https://sourceforge.net/projects/phaistos/
 
 # The patch for PROFASI1.5 can be done by:
-patch -d PROFASI < ProfasiGo.patch
+cd PROFASI
+patch -p1 < ../ProfasiGo.patch
 
 # for PHAISTOS1.0:
-patch -d phaistos-1.0 < PhaistosGo.patch
+cd phaistos-1.0
+patch -p1 < ../PhaistosGo.patch
