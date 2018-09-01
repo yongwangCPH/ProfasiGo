@@ -1,0 +1,109 @@
+diff -Naurp PROFASI/model/Energy/Extras/RestraintFunction.cc PROFASI_Go/model/Energy/Extras/RestraintFunction.cc
+--- PROFASI/model/Energy/Extras/RestraintFunction.cc	2018-09-01 14:43:04.054031897 +0200
++++ PROFASI_Go/model/Energy/Extras/RestraintFunction.cc	2018-09-01 14:45:08.513085036 +0200
+@@ -19,16 +19,17 @@
+ #include "../../Aux/Constants.hh"
+ #include <cstdlib>
+ #include <cmath>
++#include <iostream>
+ 
+ using namespace prf;
+ 
+-RestraintFunction::RestraintFunction() : offset(0), weight(1) {}
++RestraintFunction::RestraintFunction() : offset(0), weight(1), go_nd_1(0),go_nd_2(0),go_nd_3(0), go_weight_1(-1), go_weight_2(-1), go_weight_3(-1),go_width_1(0), go_width_2(0), go_width_3(0){}
+ 
+ RestraintFunction::~RestraintFunction() {}
+ 
+ int RestraintFunction::set_pars(prf_xml::XML_Node *pars)
+ {
+-    if (pars==NULL or pars->name()!="parameters") return 0;
++  if (pars==NULL or pars->name()!="parameters") return 0;
+     if (pars->child("mean")!=NULL)
+         offset=strtod(pars->child("mean")->value().c_str(),NULL);
+     else if (pars->child("offset")!=NULL)
+@@ -37,13 +38,37 @@ int RestraintFunction::set_pars(prf_xml:
+         weight=strtod(pars->child("weight")->value().c_str(),NULL);
+     else if (pars->child("scale")!=NULL)
+         weight=strtod(pars->child("scale")->value().c_str(),NULL);
++    if (pars->child("go_nd_1")!=NULL)
++        go_nd_1=strtod(pars->child("go_nd_1")->value().c_str(),NULL);
++    if (pars->child("go_nd_2")!=NULL)
++        go_nd_2=strtod(pars->child("go_nd_2")->value().c_str(),NULL);
++    if (pars->child("go_nd_3")!=NULL)
++        go_nd_3=strtod(pars->child("go_nd_3")->value().c_str(),NULL);
++    if (pars->child("go_weight_1")!=NULL)
++        go_weight_1=strtod(pars->child("go_weight_1")->value().c_str(),NULL);
++    if (pars->child("go_weight_2")!=NULL)
++        go_weight_2=strtod(pars->child("go_weight_2")->value().c_str(),NULL);
++    if (pars->child("go_weight_3")!=NULL)
++        go_weight_3=strtod(pars->child("go_weight_3")->value().c_str(),NULL);
++    if (pars->child("go_width_1")!=NULL)
++        go_width_1=strtod(pars->child("go_width_1")->value().c_str(),NULL);
++    if (pars->child("go_width_2")!=NULL)
++        go_width_2=strtod(pars->child("go_width_2")->value().c_str(),NULL);
++    if (pars->child("go_width_3")!=NULL)
++        go_width_3=strtod(pars->child("go_width_3")->value().c_str(),NULL);
++
+ 
+     return 1;
+ }
+ 
+ double RestraintFunction::operator()(double x)
+ {
+-    return weight*(x-offset)*(x-offset);
++  //std::cout<< weight<<std::endl;
++  //std::cout<< x<<std::endl;
++  //std::cout<< offset<<std::endl;
++  //std::cout<< weight*(x-offset)*(x-offset)<<std::endl;
++  return weight*(x-offset)*(x-offset);
++
+ }
+ 
+ double RestraintFunction::estimate_max(double scale_large)
+@@ -109,7 +134,33 @@ int GaussianRestraint::set_pars(prf_xml:
+ 
+ double GaussianRestraint::operator()(double x)
+ {
+-    return weight*(1-exp(-0.5*(x-offset)*(x-offset)/width/width));
++  double go = 0.0;
++  double e = 0.0;
++  //return weight*(1-exp(-0.5*(x-offset)*(x-offset)/width/width));
++  // single well potential for protein folding, use LJ or Morse function
++
++  if ( go_weight_1 > 0.0 && go_weight_2 < 0.0 ) {    
++    if ( go_width_1 < 100.0 ) {      
++      // Gaussian potential
++      e = 1 - go_weight_1 * std::exp( -std::pow( (x - go_nd_1)/go_width_1, 2 ) *0.5 )  ;
++      go += e - 1.0;
++    }
++  }
++  // gauassin functionfor double-basin and multiple-basin
++  if(go_weight_2 > 0 && go_weight_3 < 0){
++    e =  1 - go_weight_1 * std::exp( -std::pow( (x - go_nd_1)/go_width_1, 2)*0.5 )  ;
++    e *= 1 - go_weight_2 * std::exp( -std::pow( (x - go_nd_2)/go_width_2, 2)*0.5 )  ;
++    go += e - 1.0;
++  }
++  if(go_weight_3 > 0 ){
++    e =  1 - go_weight_1 * std::exp( -std::pow( (x - go_nd_1)/go_width_1, 2)*0.5 )  ;
++    e *= 1 - go_weight_2 * std::exp( -std::pow( (x - go_nd_2)/go_width_2, 2)*0.5 )  ;
++    e *= 1 - go_weight_3 * std::exp( -std::pow( (x - go_nd_3)/go_width_3, 2)*0.5 )  ;
++    go += e - 1.0;
++  }
++  return go ;
++  //return go_nd_1 + go_nd_2 + go_nd_3 + go_weight_1 + go_weight_2 + go_weight_3 + go_width_1 + go_width_2 + go_width_3 ;
++
+ }
+ 
+ double GaussianRestraint::estimate_max(double scale_large)
+diff -Naurp PROFASI/model/Energy/Extras/RestraintFunction.hh PROFASI_Go/model/Energy/Extras/RestraintFunction.hh
+--- PROFASI/model/Energy/Extras/RestraintFunction.hh	2018-09-01 14:43:04.057231769 +0200
++++ PROFASI_Go/model/Energy/Extras/RestraintFunction.hh	2018-09-01 14:45:13.758313519 +0200
+@@ -54,7 +54,7 @@ namespace prf {
+           */
+         virtual double estimate_min();
+     protected:
+-        double offset, weight;
++      double offset, weight, go_nd_1, go_nd_2, go_nd_3, go_weight_1, go_weight_2, go_weight_3, go_width_1, go_width_2, go_width_3;
+     };
+ 
+     //! Generic power law potential
