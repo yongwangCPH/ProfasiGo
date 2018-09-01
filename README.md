@@ -12,8 +12,10 @@ https://sourceforge.net/projects/phaistos/
 
 # The patch for PROFASI1.5 can be done by:
 cd PROFASI
+
 patch -p1 < ../ProfasiGo.patch
 
 # for PHAISTOS1.0:
 cd phaistos-1.0
+
 patch -p1 < ../PhaistosGo.patch
