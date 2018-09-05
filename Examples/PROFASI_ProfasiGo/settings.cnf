@@ -1,0 +1,16 @@
+add_chain_pdb 1 ../alpha3W.pdb:1:A,1,67
+
+#MUNINN: 277.8 to 512.8 in Profasi
+init_beta 1.5
+min_beta 1.3
+max_beta 2.4
+
+log_level 10
+num_cycles 100000000
+rt_write_freq 100
+conf_write_freq 100
+cycles_per_weight_update 100
+
+force_field FF08DR=FF08+Extras:DistanceRestraints(GOCA_LJ1210_W0.5.xml)
+new_obs Rg rg
+new_obs ProteinRMSD rmsd using +BB+CB; struc1 ../alpha3W.pdb:1:A,1,67 ; struc2 $::A 
