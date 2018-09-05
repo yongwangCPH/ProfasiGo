@@ -1,4 +1,4 @@
-# ProfasiGo patches for PROFASI (version 1.5) and PHAISTOS (version 1.0) softwares
+# ProfasiGo patches for PROFASI (version 1.5) and PHAISTOS (version 1.0)
 
 Reference:
 
@@ -19,3 +19,5 @@ patch -p1 < ../ProfasiGo.patch
 cd phaistos-1.0
 
 patch -p1 < ../PhaistosGo.patch
+
+# See examples (alpha3W) in the folder of Examples
